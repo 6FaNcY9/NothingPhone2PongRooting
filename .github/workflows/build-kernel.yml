@@ -230,7 +230,27 @@ jobs:
         if: env.BUILD_SYSTEM == 'make'
         run: |
           OUTDIR="$GITHUB_WORKSPACE/out"
-          pip3 install mkbootimg --quiet
+
+          # Use mkbootimg.py from the synced kernel build tools
+          MKBOOTIMG=""
+          for candidate in \
+            kernel-src/build/mkbootimg.py \
+            kernel-src/tools/mkbootimg/mkbootimg.py; do
+            if [ -f "$candidate" ]; then
+              MKBOOTIMG="python3 $candidate"
+              echo "Found mkbootimg: $candidate"
+              break
+            fi
+          done
+
+          # Fall back: download from AOSP
+          if [ -z "$MKBOOTIMG" ]; then
+            echo "mkbootimg not found in source tree, downloading from AOSP..."
+            curl -fsSL \
+              "https://android.googlesource.com/platform/system/tools/mkbootimg/+/refs/heads/android12-release/mkbootimg.py?format=TEXT" \
+              | base64 -d > /tmp/mkbootimg.py
+            MKBOOTIMG="python3 /tmp/mkbootimg.py"
+          fi
 
           # Prefer lz4-compressed image if present
           if [ -f "$OUTDIR/Image.lz4" ]; then
@@ -240,7 +260,7 @@ jobs:
           fi
 
           echo "Building boot.img from: $KERNEL"
-          mkbootimg \
+          $MKBOOTIMG \
             --header_version 3 \
             --kernel "$KERNEL" \
             --output "$OUTDIR/boot.img"
