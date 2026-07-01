@@ -1,0 +1,192 @@
+name: Build Nothing Phone 2 (Pong) — GKI Kernel + KernelSU-Next + SuSFS
+
+on:
+  workflow_dispatch:
+    inputs:
+      kernel_branch:
+        description: |
+          GKI kernel branch. Run "adb shell uname -r" on your device.
+          5.15.x + Android 14 → android14-5.15
+          5.15.x + Android 13 → android13-5.15
+        required: true
+        default: 'android14-5.15'
+        type: choice
+        options:
+          - android14-5.15
+          - android13-5.15
+      lto:
+        description: 'LTO mode — thin (faster build), full (most optimised), none (debug/CI test)'
+        required: true
+        default: 'thin'
+        type: choice
+        options:
+          - thin
+          - full
+          - none
+
+env:
+  KERNEL_MANIFEST: https://android.googlesource.com/kernel/manifest
+  SUSFS_REPO: https://gitlab.com/simonpunk/susfs4ksu.git
+  KSU_SETUP: https://raw.githubusercontent.com/pershoot/KernelSU-Next/refs/heads/next-susfs/kernel/setup.sh
+
+jobs:
+  build:
+    name: GKI kernel + KernelSU-Next + SuSFS for Pong
+    runs-on: ubuntu-22.04
+
+    steps:
+      # ── 1. Disk space ────────────────────────────────────────────────────────
+      - name: Free disk space
+        run: |
+          echo "=== Disk before cleanup ==="
+          df -h
+          sudo apt-get remove -yq \
+            '^dotnet-.*' '^llvm-.*' '^mono-.*' \
+            azure-cli google-cloud-sdk google-chrome-stable \
+            firefox powershell 2>/dev/null || true
+          sudo apt-get autoremove -yq
+          sudo apt-get clean
+          sudo rm -rf \
+            /usr/share/dotnet \
+            /usr/local/lib/android \
+            /opt/ghc \
+            /opt/hostedtoolcache/CodeQL \
+            /usr/local/.ghcup \
+            /usr/local/share/powershell
+          echo "=== Disk after cleanup ==="
+          df -h
+
+      # ── 2. Checkout ──────────────────────────────────────────────────────────
+      - uses: actions/checkout@v4
+
+      # ── 3. Dependencies ──────────────────────────────────────────────────────
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -yq --no-install-recommends \
+            python3 python3-pip python-is-python3 \
+            git curl bc bison flex libssl-dev libelf-dev \
+            build-essential cpio zip unzip
+
+          # repo tool
+          mkdir -p ~/.local/bin
+          curl -fsSL https://storage.googleapis.com/git-repo-downloads/repo \
+            -o ~/.local/bin/repo
+          chmod +x ~/.local/bin/repo
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+          git config --global user.name  "Build Bot"
+          git config --global user.email "build@localhost"
+          git config --global color.ui false
+
+      # ── 4. SuSFS source ──────────────────────────────────────────────────────
+      - name: Clone SuSFS (${{ github.event.inputs.kernel_branch }})
+        run: |
+          git clone --depth 1 --no-tags \
+            -b "gki-${{ github.event.inputs.kernel_branch }}" \
+            "$SUSFS_REPO" susfs4ksu
+
+      # ── 5. Kernel source ─────────────────────────────────────────────────────
+      - name: Init kernel manifest (${{ github.event.inputs.kernel_branch }})
+        run: |
+          mkdir -p kernel-src
+          cd kernel-src
+          repo init \
+            --no-clone-bundle --no-tags --depth=1 \
+            -u "$KERNEL_MANIFEST" \
+            -b "${{ github.event.inputs.kernel_branch }}"
+
+      - name: Sync kernel sources
+        run: |
+          cd kernel-src
+          repo sync -c --no-tags --no-clone-bundle -j$(nproc)
+
+      # ── 6. SuSFS kernel patches ──────────────────────────────────────────────
+      - name: Apply SuSFS kernel patches
+        run: |
+          KBRANCH="${{ github.event.inputs.kernel_branch }}"
+          COMMON="kernel-src/common"
+
+          # Copy SuSFS kernel files
+          cp -v susfs4ksu/kernel_patches/fs/*              "$COMMON/fs/"
+          cp -v susfs4ksu/kernel_patches/include/linux/*   "$COMMON/include/linux/"
+          cp -v susfs4ksu/kernel_patches/*.patch            "$COMMON/" 2>/dev/null || true
+
+          cd "$COMMON"
+
+          # Main SuSFS patch
+          MAIN_PATCH="50_add_susfs_in_gki-${KBRANCH}.patch"
+          if [ ! -f "$MAIN_PATCH" ]; then
+            echo "ERROR: patch not found: $MAIN_PATCH"
+            echo "Available patches:"
+            ls *.patch 2>/dev/null || echo "(none)"
+            exit 1
+          fi
+          echo "Applying $MAIN_PATCH ..."
+          patch -p1 -ui "$MAIN_PATCH"
+
+          # Optional: scope-minimised hooks (pershoot-style builds)
+          if [ -f "60_scope-minimized_manual_hooks.patch" ]; then
+            echo "Applying 60_scope-minimized_manual_hooks.patch ..."
+            patch -p1 -ui "60_scope-minimized_manual_hooks.patch"
+          fi
+
+      # ── 7. KernelSU-Next ─────────────────────────────────────────────────────
+      - name: Integrate KernelSU-Next (SuSFS-aware build)
+        run: |
+          cd kernel-src
+          curl -LSs "$KSU_SETUP" | bash -s next-susfs
+
+      # ── 8. Protected-exports removal (fixes Wi-Fi / Bluetooth) ───────────────
+      - name: Remove protected exports
+        run: |
+          cd kernel-src
+          sed -i \
+            '/^[[:space:]]*"protected_exports_list"[[:space:]]*:[[:space:]]*"android\/abi_gki_protected_exports_aarch64",$/d' \
+            common/BUILD.bazel
+          rm -f common/android/abi_gki_protected_exports_*
+          # remove stray patch files so git commit is clean
+          rm -f common/*.patch
+
+      # ── 9. Commit integrated tree ────────────────────────────────────────────
+      - name: Commit patched kernel tree
+        run: |
+          cd kernel-src/common
+          git add -A
+          git commit -m "Nothing Phone 2 (Pong): integrate KernelSU-Next + SuSFS"
+
+      # ── 10. Build ────────────────────────────────────────────────────────────
+      - name: Build GKI kernel (${{ github.event.inputs.lto }} LTO)
+        run: |
+          mkdir -p "$GITHUB_WORKSPACE/out"
+          cd kernel-src
+          tools/bazel run \
+            --config=fast \
+            --config=stamp \
+            --lto=${{ github.event.inputs.lto }} \
+            //common:kernel_aarch64_dist \
+            -- --dist_dir="$GITHUB_WORKSPACE/out"
+
+      - name: List build output
+        run: ls -lh "$GITHUB_WORKSPACE/out/"
+
+      # ── 11. Artifacts ────────────────────────────────────────────────────────
+      - name: Upload boot.img
+        uses: actions/upload-artifact@v4
+        with:
+          name: pong-boot-${{ github.event.inputs.kernel_branch }}-ksu-susfs
+          path: out/boot.img
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Upload full kernel package
+        uses: actions/upload-artifact@v4
+        with:
+          name: pong-kernel-full-${{ github.event.inputs.kernel_branch }}
+          path: |
+            out/Image
+            out/Image.lz4
+            out/System.map
+            out/vmlinux
+          if-no-files-found: warn
+          retention-days: 14
