@@ -222,7 +222,32 @@ jobs:
           DIST_DIR="$GITHUB_WORKSPACE/out" \
           build/build.sh
 
-      # ── 12. Artifacts ────────────────────────────────────────────────────────
+      # ── 12. Assemble boot.img (Make builds only) ────────────────────────────
+      # build/build.sh produces a raw Image but not a boot.img.
+      # For GKI 2.0 (header v3) the boot partition contains only the kernel —
+      # the ramdisk lives in vendor_boot.img which we never touch.
+      - name: Create boot.img from kernel Image (android12-5.10)
+        if: env.BUILD_SYSTEM == 'make'
+        run: |
+          OUTDIR="$GITHUB_WORKSPACE/out"
+          pip3 install mkbootimg --quiet
+
+          # Prefer lz4-compressed image if present
+          if [ -f "$OUTDIR/Image.lz4" ]; then
+            KERNEL="$OUTDIR/Image.lz4"
+          else
+            KERNEL="$OUTDIR/Image"
+          fi
+
+          echo "Building boot.img from: $KERNEL"
+          mkbootimg \
+            --header_version 3 \
+            --kernel "$KERNEL" \
+            --output "$OUTDIR/boot.img"
+
+          ls -lh "$OUTDIR/boot.img"
+
+      # ── 13. Artifacts ────────────────────────────────────────────────────────
       - name: List build output
         run: ls -lh "$GITHUB_WORKSPACE/out/"
 
