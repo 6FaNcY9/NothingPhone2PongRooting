@@ -6,14 +6,16 @@ on:
       kernel_branch:
         description: |
           GKI kernel branch. Run "adb shell uname -r" on your device.
-          5.15.x + Android 14 → android14-5.15
-          5.15.x + Android 13 → android13-5.15
+          5.10.x + android12 → android12-5.10  (Nothing Phone 2 / Pong default)
+          5.15.x + android13 → android13-5.15
+          5.15.x + android14 → android14-5.15
         required: true
-        default: 'android14-5.15'
+        default: 'android12-5.10'
         type: choice
         options:
-          - android14-5.15
+          - android12-5.10
           - android13-5.15
+          - android14-5.15
       lto:
         description: 'LTO mode — thin (faster build), full (most optimised), none (debug/CI test)'
         required: true

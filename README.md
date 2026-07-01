@@ -19,10 +19,11 @@ adb shell uname -r
 
 | Output starts with | Kernel branch to pick |
 |---|---|
-| `5.15.x` (on Android 14 / Nothing OS 2.5+) | `android14-5.15` |
-| `5.15.x` (on Android 13 / Nothing OS 2.0) | `android13-5.15` |
+| `5.10.x-android12-…` | **`android12-5.10`** ← Nothing Phone 2 (Pong) default |
+| `5.15.x-android13-…` | `android13-5.15` |
+| `5.15.x-android14-…` | `android14-5.15` |
 
-> The Nothing Phone 2 shipped with kernel **5.15** and this does **not** change with Android version OTAs — only the GKI minor version and security patch change.
+> The Nothing Phone 2 (Pong / SM8475) ships with kernel **5.10** (`android12-5.10` GKI branch). This does not change with Nothing OS OTAs — only the minor version and security patch level change.
 
 ### Prerequisites
 
