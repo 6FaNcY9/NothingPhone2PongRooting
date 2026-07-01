@@ -29,7 +29,11 @@ on:
 env:
   KERNEL_MANIFEST: https://android.googlesource.com/kernel/manifest
   SUSFS_REPO: https://gitlab.com/simonpunk/susfs4ksu.git
-  KSU_SETUP: https://raw.githubusercontent.com/pershoot/KernelSU-Next/refs/heads/next-susfs/kernel/setup.sh
+  # rifsxd/KernelSU-Next: upstream fork that does not make direct SuSFS driver
+  # calls, so it compiles cleanly against simonpunk's android12-5.10 SuSFS API.
+  # SuSFS kernel hooks are still active; hiding is configured via the SuSFS
+  # manager module rather than being auto-wired through the KSU driver.
+  KSU_SETUP: https://raw.githubusercontent.com/rifsxd/KernelSU-Next/next/kernel/setup.sh
 
 jobs:
   build:
@@ -170,10 +174,10 @@ jobs:
           fi
 
       # ── 8. KernelSU-Next ─────────────────────────────────────────────────────
-      - name: Integrate KernelSU-Next (SuSFS-aware build)
+      - name: Integrate KernelSU-Next
         run: |
           cd kernel-src
-          curl -LSs "$KSU_SETUP" | bash -s next-susfs
+          curl -LSs "$KSU_SETUP" | bash -s next
 
       # ── 9. Protected-exports removal (Bazel builds only — fixes Wi-Fi/BT) ────
       - name: Remove protected exports (Bazel builds)
