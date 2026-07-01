@@ -38,27 +38,42 @@ jobs:
 
     steps:
       # ── 1. Resolve branch names ──────────────────────────────────────────────
-      # The kernel/manifest repo uses 'common-' prefix for android12-5.10.
-      # android13/14-5.15 branches are named as-is.
+      # kernel/manifest uses 'common-' prefix for android12-5.10.
+      # android13/14-5.15 branches are named as-is (Bazel/Kleaf build).
+      # SuSFS: use -dev branches which carry the v2.x API that pershoot's
+      # KSU-Next driver requires. The stable gki-android12-5.10 branch has the
+      # older void** API which produces compile errors with the newer KSU driver.
       - name: Resolve manifest and SuSFS branch names
         run: |
           KBRANCH="${{ github.event.inputs.kernel_branch }}"
           case "$KBRANCH" in
             android12-5.10)
               MANIFEST_BRANCH="common-android12-5.10"
+              SUSFS_BRANCH="gki-android12-5.10-dev"
               BUILD_SYSTEM="make"
+              ;;
+            android13-5.15)
+              MANIFEST_BRANCH="android13-5.15"
+              SUSFS_BRANCH="gki-android13-5.15-dev"
+              BUILD_SYSTEM="bazel"
+              ;;
+            android14-5.15)
+              MANIFEST_BRANCH="android14-5.15"
+              SUSFS_BRANCH="gki-android14-5.15-dev"
+              BUILD_SYSTEM="bazel"
               ;;
             *)
               MANIFEST_BRANCH="$KBRANCH"
+              SUSFS_BRANCH="gki-$KBRANCH-dev"
               BUILD_SYSTEM="bazel"
               ;;
           esac
           echo "MANIFEST_BRANCH=$MANIFEST_BRANCH"   >> "$GITHUB_ENV"
-          echo "SUSFS_BRANCH=gki-$KBRANCH"          >> "$GITHUB_ENV"
+          echo "SUSFS_BRANCH=$SUSFS_BRANCH"         >> "$GITHUB_ENV"
           echo "BUILD_SYSTEM=$BUILD_SYSTEM"          >> "$GITHUB_ENV"
           echo "Kernel input:      $KBRANCH"
           echo "Manifest branch:   $MANIFEST_BRANCH"
-          echo "SuSFS branch:      gki-$KBRANCH"
+          echo "SuSFS branch:      $SUSFS_BRANCH"
           echo "Build system:      $BUILD_SYSTEM"
 
       # ── 2. Disk space ────────────────────────────────────────────────────────
@@ -108,6 +123,7 @@ jobs:
       # ── 5. SuSFS source ──────────────────────────────────────────────────────
       - name: Clone SuSFS (${{ github.event.inputs.kernel_branch }})
         run: |
+          echo "Cloning SuSFS branch: $SUSFS_BRANCH"
           git clone --depth 1 --no-tags \
             -b "$SUSFS_BRANCH" \
             "$SUSFS_REPO" susfs4ksu
