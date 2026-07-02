@@ -1,11 +1,11 @@
 # Nothing Phone 2 (Pong) — GKI Kernel with KernelSU-Next + SuSFS
 
-Builds a patched GKI boot image for the Nothing Phone 2 (codename **Pong**, SM8475) that integrates:
+Builds a patched GKI kernel for the Nothing Phone 2 (codename **Pong**, SM8475) and packages it as a flashable AnyKernel3 zip that integrates:
 
 - **KernelSU-Next** — next-generation kernel-based root with SuSFS hooks
 - **SuSFS** (susfs4ksu) — kernel-level file/path hiding to evade root detection
 
-Based on the [DroidBasement GKI tutorial](https://droidbasement.com/db-blog/tutorial-kernelsu-next-with-susfs-integrated-in-to-a-gki-generic-kernel-image/) adapted for the 5.15 kernel used by the Nothing Phone 2.
+Based on the [DroidBasement GKI tutorial](https://droidbasement.com/db-blog/tutorial-kernelsu-next-with-susfs-integrated-in-to-a-gki-generic-kernel-image/) and the standard GKI AnyKernel3 packaging style used by current KernelSU/SuSFS GKI builds.
 
 ---
 
@@ -48,30 +48,40 @@ adb pull /sdcard/boot-backup.img .
 1. Go to the **Actions** tab of this repository
 2. Select **"Build Nothing Phone 2 (Pong) — GKI Kernel + KernelSU-Next + SuSFS"**
 3. Click **"Run workflow"** and choose:
-   - **Kernel branch** — see table above (`android14-5.15` for most users)
+   - **Kernel branch** — see table above (`android12-5.10` for Nothing Phone 2 stock kernels unless `adb shell uname -r` proves otherwise)
    - **LTO mode** — `thin` (recommended; ~30 min faster than `full`)
 4. The build takes approximately **1–3 hours** depending on GitHub runner load
 
-When it finishes, download **`pong-boot-<branch>-ksu-susfs`** from the Artifacts section.
+When it finishes, download **`pong-<branch>-ksu-susfs-AnyKernel3`** from the Artifacts section and unzip the artifact once. Inside it is:
+
+```text
+pong-<branch>-ksu-susfs-AnyKernel3.zip
+```
+
+That zip is the flashable kernel package.
+
+Do **not** flash files from the raw debug artifact (`Image`, `Image.lz4`, `vmlinux`, `System.map`). `Image` is only a raw ARM64 kernel and is not a complete boot image.
 
 ---
 
-## Step 2 — Flash the boot image
+## Step 2 — Flash the AnyKernel3 zip
 
-> Your device stays in fastboot from the backup step, or reboot into it:
-> ```bash
-> adb reboot bootloader
-> ```
+Use a custom recovery such as OrangeFox/TWRP, or KernelSU/Magisk/APatch direct-install if you already have working root.
 
 ```bash
-# Flash to the current inactive slot (fastboot picks this automatically)
-fastboot flash boot boot.img
-
-# Reboot to check it boots correctly (does NOT permanently set the slot yet)
-fastboot reboot
+adb push pong-android12-5.10-ksu-susfs-AnyKernel3.zip /sdcard/Download/
 ```
 
-If the device boots normally, you're good. If it bootloops, hold **Power + Vol Down** to go back to fastboot and run:
+Then in recovery:
+
+1. Install
+2. Select `pong-android12-5.10-ksu-susfs-AnyKernel3.zip`
+3. Swipe to flash
+4. Reboot system
+
+The AnyKernel3 installer patches the current boot partition and preserves the ROM's existing ramdisk/header layout. This is safer than trying to build a generic `boot.img` in CI.
+
+If the device bootloops, hold **Power + Vol Down** to go back to fastboot and restore your backup:
 
 ```bash
 fastboot flash boot boot-backup.img   # restore your backup
@@ -131,10 +141,11 @@ In KernelSU-Next Manager, the **SuperUser** tab should list apps that have reque
 | Problem | Fix |
 |---|---|
 | Bootloop after flashing | Restore backup from fastboot: `fastboot flash boot boot-backup.img` |
-| KSU Manager shows "not installed" | Double-check the kernel branch — try `android13-5.15` if you used `android14-5.15` |
+| KSU Manager shows "not installed" | Confirm you flashed the AnyKernel3 zip, not the raw `Image`; then double-check `adb shell uname -r` and rebuild with the matching branch |
 | Wi-Fi / Bluetooth broken | The workflow already removes `protected_exports_list`; if still broken, try `--lto=none` build |
 | Patch fails in CI | Check the Actions log — the SuSFS patch may not apply cleanly on a new kernel minor version; open an issue |
 | Play Integrity still failing | Ensure the SuSFS module is installed and the app's package is in the deny list in KSU Manager |
+| Recovery says unsupported device | Confirm the device name is `Pong`; the zip is intentionally restricted to Nothing Phone 2/Pong targets |
 
 ---
 
@@ -143,11 +154,12 @@ In KernelSU-Next Manager, the **SuperUser** tab should list apps that have reque
 ```
 GKI kernel source (android.googlesource.com)
   └── simonpunk/susfs4ksu patches applied
-        └── pershoot/KernelSU-Next (next-susfs) integrated
-              └── Bazel build → boot.img
+        └── KernelSU-Next integrated
+              └── build.sh/Bazel build → Image
+                    └── AnyKernel3 zip → patches current boot partition
 ```
 
-The resulting `boot.img` replaces only the **generic kernel** partition. The `vendor_boot.img` (which contains all Nothing Phone 2 hardware drivers) is never touched.
+The resulting AnyKernel3 zip replaces only the kernel inside the current boot image. It does not overwrite `vendor_boot.img`.
 
 ---
 

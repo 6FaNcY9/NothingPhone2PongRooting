@@ -29,11 +29,8 @@ on:
 env:
   KERNEL_MANIFEST: https://android.googlesource.com/kernel/manifest
   SUSFS_REPO: https://gitlab.com/simonpunk/susfs4ksu.git
-  # rifsxd/KernelSU-Next: upstream fork that does not make direct SuSFS driver
-  # calls, so it compiles cleanly against simonpunk's android12-5.10 SuSFS API.
-  # SuSFS kernel hooks are still active; hiding is configured via the SuSFS
-  # manager module rather than being auto-wired through the KSU driver.
-  KSU_SETUP: https://raw.githubusercontent.com/rifsxd/KernelSU-Next/next/kernel/setup.sh
+  KSU_REPO: https://github.com/pershoot/KernelSU-Next.git
+  KSU_SETUP: https://raw.githubusercontent.com/pershoot/KernelSU-Next/dev-susfs/kernel/setup.sh
 
 jobs:
   build:
@@ -177,7 +174,42 @@ jobs:
       - name: Integrate KernelSU-Next
         run: |
           cd kernel-src
-          curl -LSs "$KSU_SETUP" | bash -s next
+          curl -LSs "$KSU_SETUP" | bash -s dev-susfs
+          git -C KernelSU-Next/kernel fetch --depth=50 "$KSU_REPO" dev-susfs
+          git -C KernelSU-Next/kernel checkout FETCH_HEAD
+
+      - name: Enable KernelSU-Next + SuSFS configs
+        run: |
+          COMMON="kernel-src/common"
+          DEFCONFIG="$COMMON/arch/arm64/configs/gki_defconfig"
+
+          enable_config() {
+            key="$1"
+            if grep -q "^# $key is not set$" "$DEFCONFIG"; then
+              sed -i "s/^# $key is not set$/$key=y/" "$DEFCONFIG"
+            elif grep -q "^$key=" "$DEFCONFIG"; then
+              sed -i "s/^$key=.*/$key=y/" "$DEFCONFIG"
+            else
+              echo "$key=y" >> "$DEFCONFIG"
+            fi
+          }
+
+          enable_config CONFIG_KSU
+          enable_config CONFIG_KSU_SUSFS
+          enable_config CONFIG_KSU_SUSFS_SUS_PATH
+          enable_config CONFIG_KSU_SUSFS_SUS_MOUNT
+          enable_config CONFIG_KSU_SUSFS_SUS_KSTAT
+          enable_config CONFIG_KSU_SUSFS_TRY_UMOUNT
+          enable_config CONFIG_KSU_SUSFS_AUTO_ADD_SUS_KSU_DEFAULT_MOUNT
+          enable_config CONFIG_KSU_SUSFS_AUTO_ADD_SUS_BIND_MOUNT
+          enable_config CONFIG_KSU_SUSFS_SPOOF_UNAME
+          enable_config CONFIG_KSU_SUSFS_ENABLE_LOG
+          enable_config CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS
+          enable_config CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG
+          enable_config CONFIG_KSU_SUSFS_OPEN_REDIRECT
+          enable_config CONFIG_KSU_SUSFS_SUS_MAP
+
+          grep -E 'CONFIG_KSU|CONFIG_KSU_SUSFS' "$DEFCONFIG"
 
       # ── 9. Protected-exports removal (Bazel builds only — fixes Wi-Fi/BT) ────
       - name: Remove protected exports (Bazel builds)
@@ -222,67 +254,77 @@ jobs:
           DIST_DIR="$GITHUB_WORKSPACE/out" \
           build/build.sh
 
-      # ── 12. Assemble boot.img (Make builds only) ────────────────────────────
-      # build/build.sh produces a raw Image but not a boot.img.
-      # For GKI 2.0 (header v3) the boot partition contains only the kernel —
-      # the ramdisk lives in vendor_boot.img which we never touch.
-      - name: Create boot.img from kernel Image (android12-5.10)
-        if: env.BUILD_SYSTEM == 'make'
+      # ── 12. Package flashable AnyKernel3 zip ────────────────────────────────
+      # GKI builds produce a kernel Image. Do not flash that raw file directly.
+      # AnyKernel3 patches the device's current boot image in recovery/rooted
+      # userspace, preserving the ramdisk/header layout for the installed ROM.
+      - name: Package AnyKernel3 zip
         run: |
           OUTDIR="$GITHUB_WORKSPACE/out"
+          AK3="$GITHUB_WORKSPACE/AnyKernel3"
+          ZIP="$GITHUB_WORKSPACE/pong-${{ github.event.inputs.kernel_branch }}-ksu-susfs-AnyKernel3.zip"
 
-          # Use mkbootimg.py from the synced kernel build tools
-          MKBOOTIMG=""
-          for candidate in \
-            kernel-src/build/mkbootimg.py \
-            kernel-src/tools/mkbootimg/mkbootimg.py; do
-            if [ -f "$candidate" ]; then
-              MKBOOTIMG="python3 $candidate"
-              echo "Found mkbootimg: $candidate"
-              break
-            fi
-          done
+          git clone --depth 1 --branch gki-2.0 \
+            https://github.com/WildKernels/AnyKernel3.git "$AK3"
 
-          # Fall back: download from AOSP
-          if [ -z "$MKBOOTIMG" ]; then
-            echo "mkbootimg not found in source tree, downloading from AOSP..."
-            curl -fsSL \
-              "https://android.googlesource.com/platform/system/tools/mkbootimg/+/refs/heads/android12-release/mkbootimg.py?format=TEXT" \
-              | base64 -d > /tmp/mkbootimg.py
-            MKBOOTIMG="python3 /tmp/mkbootimg.py"
-          fi
-
-          # Prefer lz4-compressed image if present
-          if [ -f "$OUTDIR/Image.lz4" ]; then
-            KERNEL="$OUTDIR/Image.lz4"
-          else
+          if [ -f "$OUTDIR/Image" ]; then
             KERNEL="$OUTDIR/Image"
+            TARGET_NAME="Image"
+          elif [ -f "$OUTDIR/Image.lz4" ]; then
+            KERNEL="$OUTDIR/Image.lz4"
+            TARGET_NAME="Image.lz4"
+          elif [ -f "$OUTDIR/dist/Image" ]; then
+            KERNEL="$OUTDIR/dist/Image"
+            TARGET_NAME="Image"
+          elif [ -f "$OUTDIR/dist/Image.lz4" ]; then
+            KERNEL="$OUTDIR/dist/Image.lz4"
+            TARGET_NAME="Image.lz4"
+          else
+            echo "ERROR: no built kernel Image found under $OUTDIR"
+            find "$OUTDIR" -maxdepth 3 -type f -printf '%p\n' | sort
+            exit 1
           fi
 
-          echo "Building boot.img from: $KERNEL"
-          $MKBOOTIMG \
-            --header_version 3 \
-            --kernel "$KERNEL" \
-            --output "$OUTDIR/boot.img"
+          cp "$KERNEL" "$AK3/$TARGET_NAME"
 
-          ls -lh "$OUTDIR/boot.img"
+          python3 - <<'PY'
+          from pathlib import Path
+
+          p = Path("AnyKernel3/anykernel.sh")
+          s = p.read_text()
+          s = s.replace("kernel.string=Wild Kernels by TheWildJames aka Morgan Weedman",
+                        "kernel.string=Nothing Phone 2 Pong KernelSU-Next + SuSFS")
+          s = s.replace("do.devicecheck=0", "do.devicecheck=1")
+          s = s.replace("device.name1=", "device.name1=Pong")
+          s = s.replace("device.name2=", "device.name2=pong")
+          s = s.replace("device.name3=", "device.name3=Nothing_Pong")
+          s = s.replace("device.name4=", "device.name4=A065")
+          p.write_text(s)
+          PY
+
+          (
+            cd "$AK3"
+            zip -r -q -9 "$ZIP" . -x ".git/*"
+          )
+
+          ls -lh "$ZIP"
 
       # ── 13. Artifacts ────────────────────────────────────────────────────────
       - name: List build output
         run: ls -lh "$GITHUB_WORKSPACE/out/"
 
-      - name: Upload boot.img
+      - name: Upload flashable AnyKernel3 zip
         uses: actions/upload-artifact@v4
         with:
-          name: pong-boot-${{ github.event.inputs.kernel_branch }}-ksu-susfs
-          path: out/boot.img
-          if-no-files-found: warn
+          name: pong-${{ github.event.inputs.kernel_branch }}-ksu-susfs-AnyKernel3
+          path: pong-${{ github.event.inputs.kernel_branch }}-ksu-susfs-AnyKernel3.zip
+          if-no-files-found: error
           retention-days: 14
 
-      - name: Upload full kernel package
+      - name: Upload raw kernel debug artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: pong-kernel-full-${{ github.event.inputs.kernel_branch }}
+          name: pong-${{ github.event.inputs.kernel_branch }}-ksu-susfs-raw-kernel
           path: |
             out/Image
             out/Image.lz4
