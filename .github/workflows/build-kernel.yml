@@ -249,6 +249,7 @@ jobs:
         run: |
           mkdir -p "$GITHUB_WORKSPACE/out"
           cd kernel-src
+          sed -i 's/check_defconfig//' common/build.config.gki
           LTO=${{ github.event.inputs.lto }} \
           BUILD_CONFIG=common/build.config.gki.aarch64 \
           DIST_DIR="$GITHUB_WORKSPACE/out" \
